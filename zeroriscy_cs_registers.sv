@@ -71,6 +71,14 @@ module zeroriscy_cs_registers
   input  logic [5:0]  csr_cause_i,
   input  logic        csr_save_cause_i,
 
+  // RV Debug Control
+  output logic [31:0] dpc_o, // address where to return from the debug mode
+  output logic        debug_mode_o,
+  output logic        dbg_enter_req_o, // signals a request to enter the debug mode
+  input  logic        dbg_irq_i,
+  input  logic        csr_save_dpc_i,
+  input  logic        csr_restore_dret_i,
+  input  logic        dbg_ebrk_stb_i,
 
   // Performance Counters
   input  logic                 if_valid_i,        // IF stage gives a new instruction
@@ -145,6 +153,27 @@ module zeroriscy_cs_registers
   logic [ 5:0] mcause_q, mcause_n;
   Status_t mstatus_q, mstatus_n;
 
+  // RV Debug control and status signals
+  logic        dcsr_wr;
+  logic [2:0]  dcsr_cause;
+  logic        dcsr_halt;
+  logic        dcsr_step;
+  wire         dbg_stopcycle = 1'b0; // when 0/1, then performance counter are on/off in the Debug Mode
+  // Debug Spec (v.011, sec. 8.6.1, p. 29): When 1 (`ebreakm`), ebreak instructions in Machine Mode enter Debug Mode.
+  wire         ebreakm_r = 1'b0; // TODO: not implemented yet
+  logic        dbg_cause_set;
+  logic [31:0] dscratch;
+  logic [31:0] dpc;
+  logic        dcsr_halt_d; // Delayed version of `dcsr_halt` used for rising edge detection.
+
+  assign dcsr_wr = csr_we_int & (csr_addr_i == 12'h7b0);
+  assign dbg_cause_set = dbg_ebrk_stb_i | csr_save_dpc_i | (dcsr_halt & ~dcsr_halt_d); // TODO
+  assign dbg_enter_req_o =
+      dbg_irq_i | // debug interrupt (=request from DM)
+      (dcsr_wr & csr_wdata_int[3]) | dcsr_halt | // HALT request (TODO: using `dcsr_halt` may not be necessary here)
+      dbg_ebrk_stb_i | // `ebreak` instruction executed
+      1'b0; //TODO others (e.g. single step)
+
   ////////////////////////////////////////////
   //   ____ ____  ____    ____              //
   //  / ___/ ___||  _ \  |  _ \ ___  __ _   //
@@ -176,6 +205,13 @@ module zeroriscy_cs_registers
       12'h341: csr_rdata_int = mepc_q;
       // mcause: exception cause
       12'h342: csr_rdata_int = {mcause_q[5], 26'b0, mcause_q[4:0]};
+
+      // dcsr: RV debug control and status
+      12'h7b0: csr_rdata_int = { 2'd1, 14'b0, {4{ebreakm_r}}, 1'b0, dbg_stopcycle, 1'b0, dcsr_cause, dbg_irq_i, 1'b0, dcsr_halt, dcsr_step, 2'b11 };
+      // dpc: RV debug PC
+      12'h7b1: csr_rdata_int = dpc;
+      // dscratch: RV debug scratch register
+      12'h7b2: csr_rdata_int = dscratch;
 
       // mhartid: unique hardware thread id
       12'hF14: csr_rdata_int = {21'b0, cluster_id_i[5:0], 1'b0, core_id_i[3:0]};
@@ -271,6 +307,7 @@ module zeroriscy_cs_registers
   // directly output some registers
   assign m_irq_enable_o  = mstatus_q.mie;
   assign mepc_o          = mepc_q;
+  assign dpc_o           = dpc;
 
 
   // actual registers
@@ -297,6 +334,73 @@ module zeroriscy_cs_registers
       mepc_q     <= mepc_n;
       mcause_q   <= mcause_n;
     end
+  end
+
+  // dcsr: RV debug control and status (writeable bits)
+  always_ff @(posedge clk, negedge rst_n) begin
+    if (rst_n == 1'b0) begin
+        dcsr_halt <= 1'b0;
+        dcsr_halt_d <= 1'b0;
+        dcsr_step <= 1'b0;
+        dcsr_cause <= '0;
+    end
+    else begin
+      if (dcsr_wr) begin
+          {dcsr_halt, dcsr_step} <= csr_wdata_int[3:2];
+          dcsr_halt_d <= dcsr_halt;
+      end
+      if (debug_mode_o & csr_restore_dret_i) begin
+          // Debug Spec (v0.11, sec. 8.4, p. 28): `cause` in `dcsr` is cleared since the hart is no longer in Debug Mode.
+          dcsr_cause <= 3'b0;
+      end
+      else if (~debug_mode_o & dbg_cause_set) begin
+          case (1)
+              dbg_ebrk_stb_i: dcsr_cause <= 3'd1;
+              dbg_irq_i:      dcsr_cause <= 3'd3;
+              dcsr_step:      dcsr_cause <= 3'd4;
+              dcsr_halt:      dcsr_cause <= 3'd5;
+              default:        dcsr_cause <= 3'd0;
+          endcase
+      end
+    end
+  end
+
+  assign debug_mode_o = dcsr_cause != 3'h0;
+
+  // dpc: RV Debug PC
+  always_ff @(posedge clk, negedge rst_n) begin
+      if (rst_n == 1'b0) begin
+          dpc <= '0;
+      end
+      else begin
+          if (~debug_mode_o & csr_save_dpc_i) begin
+              unique case (1'b1)
+                csr_save_if_i:  dpc <= pc_if_i;
+                csr_save_id_i:  dpc <= pc_id_i;
+                default:;
+              endcase
+          end
+          else if (csr_we_int & (csr_addr_i == 12'h7b1)) begin
+              dpc <= csr_wdata_int;
+          end
+          else if (debug_mode_o & csr_restore_dret_i) begin
+              // On returning from the debug mode we clear DPC so that it will
+              // cause a trap in case the design or the executed code attempts
+              // to cause `dret` again (without first entering the debug mode
+              // or setting DPC manually).
+              dpc <= '0;
+          end
+      end
+  end
+
+  // dscratch: RV Debug Scratch register
+  always_ff @(posedge clk, negedge rst_n) begin
+      if (rst_n == 1'b0) begin
+          dscratch <= '0;
+      end
+      else if (csr_we_int & (csr_addr_i == 12'h7b2)) begin
+          dscratch <= csr_wdata_int;
+      end
   end
 
   /////////////////////////////////////////////////////////////////

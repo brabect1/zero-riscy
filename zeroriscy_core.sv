@@ -73,7 +73,7 @@ module zeroriscy_core
   output logic        irq_ack_o,             // irq ack
   output logic [4:0]  irq_id_o,
 
-  // Debug Interface
+  // Debug Interface (legacy)
   input  logic        debug_req_i,
   output logic        debug_gnt_o,
   output logic        debug_rvalid_o,
@@ -84,6 +84,9 @@ module zeroriscy_core
   output logic        debug_halted_o,
   input  logic        debug_halt_i,
   input  logic        debug_resume_i,
+
+  // Debug Interface (RV)
+  input  logic        dbg_irq,
 
   // CPU Control Signals
   input  logic        fetch_enable_i,
@@ -96,7 +99,7 @@ module zeroriscy_core
 
   // IF/ID signals
   logic              instr_valid_id;
-  logic [31:0]       instr_rdata_id;    // Instruction sampled inside IF stage
+  zeroriscy_pkg::t_instr instr_rdata_id;    // Instruction sampled inside IF stage
   logic              is_compressed_id;
   logic              illegal_c_insn_id; // Illegal compressed instruction sent to ID stage
   logic [31:0]       pc_if;             // Program counter in IF stage
@@ -105,7 +108,7 @@ module zeroriscy_core
   logic              clear_instr_valid;
   logic              pc_set;
   logic [2:0]        pc_mux_id;     // Mux selector for next PC
-  logic [1:0]        exc_pc_mux_id;     // Mux selector for exception PC
+  logic [2:0]        exc_pc_mux_id;     // Mux selector for exception PC
   logic [5:0]        exc_cause;
 
   logic              lsu_load_err;
@@ -224,6 +227,13 @@ module zeroriscy_core
   logic        perf_branch;
   logic        perf_tbranch;
 
+  // RV debug signals
+  logic [31:0] dpc;
+  logic debug_mode;
+  logic dbg_enter_req;
+  logic csr_save_dpc;
+  logic csr_restore_dret;
+  logic dbg_ebrk_stb;
 
   //////////////////////////////////////////////////////////////////////////////////////////////
   //   ____ _            _      __  __                                                   _    //
@@ -258,7 +268,7 @@ module zeroriscy_core
 
   assign dbg_busy    = dbg_req | dbg_csr_req | dbg_jump_req | dbg_reg_wreq | debug_req_i;
 
-  assign clock_en    = core_busy | dbg_busy | irq_i;
+  assign clock_en    = core_busy | dbg_busy | irq_i | dbg_irq;
 
   assign sleeping    = (~core_busy);
 
@@ -298,7 +308,7 @@ module zeroriscy_core
     .instr_addr_o        ( instr_addr_o      ),
     .instr_gnt_i         ( instr_gnt_i       ),
     .instr_rvalid_i      ( instr_rvalid_i    ),
-    .instr_rdata_i       ( instr_rdata_i     ),
+    .instr_rdata_i       ( {dbg_irq,irq_i,instr_rdata_i}     ),
 
     // outputs to ID stage
     .instr_valid_id_o    ( instr_valid_id    ),
@@ -312,6 +322,7 @@ module zeroriscy_core
     .clear_instr_valid_i ( clear_instr_valid ),
     .pc_set_i            ( pc_set            ),
     .exception_pc_reg_i  ( mepc              ), // exception return address
+    .dbg_pc_reg_i        ( dpc               ), // debug mode return address (RV debug)
     .pc_mux_i            ( pc_mux_id         ), // sel for pc multiplexer
     .exc_pc_mux_i        ( exc_pc_mux_id     ),
     .exc_vec_pc_mux_i    ( exc_cause[4:0]    ),
@@ -445,6 +456,14 @@ module zeroriscy_core
     .dbg_reg_wdata_i              ( dbg_reg_wdata        ),
 
     .dbg_jump_req_i               ( dbg_jump_req         ),
+
+    // Debug Signals (RV)
+    .dbg_irq                      ( dbg_irq              ),
+    .debug_mode                   ( debug_mode           ),
+    .dbg_enter_req                ( dbg_enter_req        ),
+    .csr_save_dpc_o               ( csr_save_dpc         ),
+    .csr_restore_dret_o           ( csr_restore_dret     ),
+    .dbg_ebrk_stb_o               ( dbg_ebrk_stb         ),
 
     // write data to commit in the register file
     .regfile_wdata_lsu_i          ( regfile_wdata_lsu    ),
@@ -580,6 +599,7 @@ module zeroriscy_core
     // Interrupt related control signals
     .m_irq_enable_o          ( m_irq_enable       ),
     .mepc_o                  ( mepc               ),
+    .dpc_o                   ( dpc                ),
 
     .pc_if_i                 ( pc_if              ),
     .pc_id_i                 ( pc_id              ),
@@ -590,6 +610,12 @@ module zeroriscy_core
     .csr_cause_i             ( csr_cause          ),
     .csr_save_cause_i        ( csr_save_cause     ),
 
+    .csr_save_dpc_i          ( csr_save_dpc       ),
+    .csr_restore_dret_i      ( csr_restore_dret   ),
+    .dbg_ebrk_stb_i          ( dbg_ebrk_stb       ),
+    .dbg_irq_i               ( dbg_irq            ),
+    .debug_mode_o            ( debug_mode         ),
+    .dbg_enter_req_o         ( dbg_enter_req      ),
 
     // performance counter related signals
     .if_valid_i              ( if_valid           ),

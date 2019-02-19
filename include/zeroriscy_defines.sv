@@ -278,14 +278,17 @@ parameter PC_BOOT          = 3'b000;
 parameter PC_JUMP          = 3'b010;
 parameter PC_EXCEPTION     = 3'b100;
 parameter PC_ERET          = 3'b101;
+parameter PC_DRET          = 3'b110; // return from the debug mode (RV debug)
+parameter PC_DEXCEPTION    = 3'b011; //TODO: temporary solution for exception in the debug mode (RV debug)
 parameter PC_DBG_NPC       = 3'b111;
 
 // Exception PC mux selector defines
-parameter EXC_PC_ILLINSN   = 2'b00;
-parameter EXC_PC_ECALL     = 2'b01;
-parameter EXC_PC_LOAD      = 2'b10;
-parameter EXC_PC_STORE     = 2'b10;
-parameter EXC_PC_IRQ       = 2'b11;
+parameter EXC_PC_ILLINSN   = 3'b000;
+parameter EXC_PC_ECALL     = 3'b001;
+parameter EXC_PC_LOAD      = 3'b010;
+parameter EXC_PC_STORE     = 3'b010;
+parameter EXC_PC_IRQ       = 3'b011;
+parameter EXC_PC_DBG_IRQ   = 3'b111;
 
 // Exception Cause
 parameter EXC_CAUSE_ILLEGAL_INSN = 6'h02;

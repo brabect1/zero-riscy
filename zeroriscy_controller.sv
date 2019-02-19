@@ -49,6 +49,7 @@ module zeroriscy_controller
   input  logic        illegal_insn_i,             // decoder encountered an invalid instruction
   input  logic        ecall_insn_i,               // ecall encountered an mret instruction
   input  logic        mret_insn_i,                // decoder encountered an mret instruction
+  input  logic        dret_insn_i,                // decoder encountered an dret instruction
   input  logic        pipe_flush_i,               // decoder wants to do a pipe flush
   input  logic        ebrk_insn_i,                // decoder encountered an ebreak instruction
   input  logic        csr_status_i,              // decoder encountered an csr status instruction
@@ -62,7 +63,7 @@ module zeroriscy_controller
   // to prefetcher
   output logic        pc_set_o,                   // jump to address set by pc_mux
   output logic [2:0]  pc_mux_o,                   // Selector in the Fetch stage to select the rigth PC (normal, jump ...)
-  output logic [1:0]  exc_pc_mux_o,               // Selects target PC for exception
+  output logic [2:0]  exc_pc_mux_o,               // Selects target PC for exception
 
   // LSU
   input  logic        data_misaligned_i,
@@ -81,6 +82,7 @@ module zeroriscy_controller
   input  logic        irq_req_ctrl_i,
   input  logic [4:0]  irq_id_ctrl_i,
   input  logic        m_IE_i,                     // interrupt enable bit from CSR (M mode)
+//tbr  input  logic        irq_dbg_i,
 
   output logic        irq_ack_o,
   output logic [4:0]  irq_id_o,
@@ -104,6 +106,13 @@ module zeroriscy_controller
 
   input  logic [DBG_SETS_W-1:0] dbg_settings_i,
   output logic        dbg_trap_o,
+
+  // Debug Singnals (RV)
+  input  logic        dbg_irq,
+  input  logic        dbg_enter_req,
+  input  logic        debug_mode,
+  output logic        csr_save_dpc_o,
+  output logic        csr_restore_dret_id_o,
 
   // forwarding signals
   output logic [1:0]  operand_a_fw_mux_sel_o,     // regfile ra data selector form ID stage
@@ -163,7 +172,9 @@ module zeroriscy_controller
     csr_save_if_o          = 1'b0;
     csr_save_id_o          = 1'b0;
     csr_restore_mret_id_o  = 1'b0;
+    csr_restore_dret_id_o  = 1'b0;
     csr_save_cause_o       = 1'b0;
+    csr_save_dpc_o         = 1'b0;
 
     exc_cause_o            = '0;
     exc_pc_mux_o           = EXC_PC_IRQ;
@@ -251,7 +262,7 @@ module zeroriscy_controller
         end else begin
           // no debug request incoming, normal execution flow
           // here transparent interrupts are checked to wake up from wfi
-          if (irq_i)
+          if (irq_i | dbg_irq)
           begin
             ctrl_fsm_ns  = FIRST_FETCH;
           end
@@ -267,7 +278,7 @@ module zeroriscy_controller
           ctrl_fsm_ns = DECODE;
         end
 
-        if (irq_req_ctrl_i & irq_enable_int) begin
+        if ((irq_req_ctrl_i & irq_enable_int) | (dbg_enter_req & ~debug_mode)) begin
           // This assumes that the pipeline is always flushed before
           // going to sleep.
           ctrl_fsm_ns = IRQ_TAKEN;
@@ -287,7 +298,7 @@ module zeroriscy_controller
           begin // now analyze the current instruction in the ID stage
             is_decoding_o = 1'b1;
 
-              if (branch_set_i & ~jump_set_i & ~(mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
+              if (branch_set_i & ~jump_set_i & ~(dret_insn_i | mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
               begin
                 pc_mux_o          = PC_JUMP;
                 pc_set_o          = 1'b1;
@@ -296,14 +307,14 @@ module zeroriscy_controller
                 if (dbg_req_i)
                   ctrl_fsm_ns = DBG_SIGNAL;
               end
-              else if (~branch_set_i & jump_set_i & ~(mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
+              else if (~branch_set_i & jump_set_i & ~(dret_insn_i | mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
               begin
                 pc_mux_o          = PC_JUMP;
                 pc_set_o          = 1'b1;
                 perf_jump_o       = 1'b1;
                 dbg_trap_o        = dbg_settings_i[DBG_SETS_SSTE];
               end
-              else if (~branch_set_i & ~jump_set_i & (mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
+              else if (~branch_set_i & ~jump_set_i & (dret_insn_i | mret_insn_i | ecall_insn_i | pipe_flush_i | ebrk_insn_i | illegal_insn_i | csr_status_i))
               begin
                 ctrl_fsm_ns = FLUSH;
                 halt_if_o   = 1'b1;
@@ -313,13 +324,13 @@ module zeroriscy_controller
               begin
                 dbg_trap_o = dbg_settings_i[DBG_SETS_SSTE];
 
-                if ((irq_req_ctrl_i & irq_enable_int & ~instr_multicyle_i & ~branch_in_id_i) & ~(dbg_req_i & ~branch_taken_ex_i))
+                if ((((irq_req_ctrl_i & irq_enable_int) | (dbg_enter_req & ~debug_mode)) & ~instr_multicyle_i & ~branch_in_id_i) & ~(dbg_req_i & ~branch_taken_ex_i))
                 begin
                     ctrl_fsm_ns = IRQ_TAKEN;
                     halt_if_o   = 1'b1;
                     halt_id_o   = 1'b1;
                 end
-                else if (~(irq_req_ctrl_i & irq_enable_int & ~instr_multicyle_i & ~branch_in_id_i) & (dbg_req_i & ~branch_taken_ex_i))
+                else if (~(((irq_req_ctrl_i & irq_enable_int) | (dbg_enter_req & ~debug_mode)) & ~instr_multicyle_i & ~branch_in_id_i) & (dbg_req_i & ~branch_taken_ex_i))
                 begin
                     halt_if_o = 1'b1;
                     if (id_ready_i) begin
@@ -332,7 +343,7 @@ module zeroriscy_controller
           end
           else //~instr_valid_i
           begin
-              if (irq_req_ctrl_i & irq_enable_int) begin
+              if ((irq_req_ctrl_i & irq_enable_int) | (dbg_enter_req & ~debug_mode)) begin
                 ctrl_fsm_ns = IRQ_TAKEN;
                 halt_if_o   = 1'b1;
                 halt_id_o   = 1'b1;
@@ -380,15 +391,27 @@ module zeroriscy_controller
         pc_mux_o          = PC_EXCEPTION;
         pc_set_o          = 1'b1;
 
-        exc_pc_mux_o      = EXC_PC_IRQ;
+//tbr        exc_pc_mux_o      = irq_dbg_i ? EXC_PC_DBG_IRQ : EXC_PC_IRQ;
+//tbr        exc_cause_o       = {1'b0,irq_id_ctrl_i};
+//tbr
+//tbr        csr_save_cause_o  = ~irq_dbg_i;
+//tbr        csr_save_dpc_o    = irq_dbg_i; // TODO this may be replaced by irq_ack_o & irq_dbg_i
+//tbr        csr_cause_o       = {1'b1,irq_id_ctrl_i};//TODO depends on irq_dbg?
+//tbr
+//tbr        csr_save_if_o     = 1'b1; // This signal saves IF PC into either MEPC or DPC
+//tbr
+//tbr        irq_ack_o         = 1'b1; // TODO this may need to be conditioned by ~irq_dbg_i (otherwise we may acknowledge irq that gets preceded by a debug irq)
+//tbr        exc_ack_o         = 1'b1;
+        exc_pc_mux_o      = dbg_enter_req ? EXC_PC_DBG_IRQ : EXC_PC_IRQ;
         exc_cause_o       = {1'b0,irq_id_ctrl_i};
 
-        csr_save_cause_o  = 1'b1;
-        csr_cause_o       = {1'b1,irq_id_ctrl_i};
+        csr_save_cause_o  = ~dbg_enter_req;
+        csr_save_dpc_o    = dbg_enter_req; // TODO this may be replaced by irq_ack_o & irq_dbg_i
+        csr_cause_o       = {1'b1,irq_id_ctrl_i};//TODO depends on irq_dbg?
 
-        csr_save_if_o     = 1'b1;
+        csr_save_if_o     = 1'b1; // This signal saves IF PC into either MEPC or DPC
 
-        irq_ack_o         = 1'b1;
+        irq_ack_o         = ~dbg_enter_req;
         exc_ack_o         = 1'b1;
 
         ctrl_fsm_ns       = DECODE;
@@ -433,8 +456,23 @@ module zeroriscy_controller
               csr_restore_mret_id_o = 1'b1;
               dbg_trap_o            = dbg_settings_i[DBG_SETS_SSTE];
           end
+          dret_insn_i: begin
+              //dret
+              pc_mux_o              = PC_DRET;
+              pc_set_o              = 1'b1;
+              csr_restore_dret_id_o = 1'b1;
+              dbg_trap_o            = dbg_settings_i[DBG_SETS_SSTE];
+          end
+          //TODO Could the `ebrk_insn_i` be removed in spite of `dbg_enter_req`?
           ebrk_insn_i: begin
-              dbg_trap_o    = 1'b1;//dbg_settings_i[DBG_SETS_EBRK] | dbg_settings_i[DBG_SETS_SSTE];;
+              //TODO need to set `exc_ack_o`?
+              pc_mux_o       = PC_EXCEPTION;
+              pc_set_o       = 1'b1;
+              exc_pc_mux_o   = EXC_PC_DBG_IRQ; // `ebreak` enters the Debug Mode the same way as Debug IRQ
+              csr_save_dpc_o = 1'b1;
+              csr_save_if_o  = 1'b1; // This signal saves IF PC into either MEPC or DPC
+              dbg_trap_o    = 1'b0; //TODO: Here is where the legacy debug and the new RV debug collide.
+//              dbg_trap_o    = 1'b1;//dbg_settings_i[DBG_SETS_EBRK] | dbg_settings_i[DBG_SETS_SSTE];;
               exc_cause_o   = EXC_CAUSE_BREAKPOINT;
           end
           csr_status_i: begin

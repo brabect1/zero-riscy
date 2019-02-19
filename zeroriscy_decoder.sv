@@ -43,6 +43,7 @@ module zeroriscy_decoder
   output logic        illegal_insn_o,          // illegal instruction encountered
   output logic        ebrk_insn_o,             // trap instruction encountered
   output logic        mret_insn_o,             // return from exception instruction encountered
+  output logic        dret_insn_o,             // return from debug mode encountered
   output logic        ecall_insn_o,            // environment call (syscall) instruction encountered
   output logic        pipe_flush_o,            // pipeline flush is requested
 
@@ -136,6 +137,7 @@ module zeroriscy_decoder
     illegal_insn_o              = 1'b0;
     ebrk_insn_o                 = 1'b0;
     mret_insn_o                 = 1'b0;
+    dret_insn_o                 = 1'b0;
     ecall_insn_o                = 1'b0;
     pipe_flush_o                = 1'b0;
 
@@ -471,6 +473,19 @@ module zeroriscy_decoder
       //                                            //
       ////////////////////////////////////////////////
 
+      OPCODE_FENCE: begin
+        unique case (instr_rdata_i[14:12])
+          3'h0,3'h1: begin // FENCE, FENCE.I
+            // both instructions are treated as NOPs and hence doing
+            // no further decoding
+            alu_operator_o      = ALU_ADD;
+            regfile_we          = 1'b0;
+          end
+
+          default: illegal_insn_o = 1'b1;
+        endcase
+      end
+
       OPCODE_SYSTEM: begin
         if (instr_rdata_i[14:12] == 3'b000)
         begin
@@ -497,6 +512,11 @@ module zeroriscy_decoder
             begin
               // flush pipeline
               pipe_flush_o = 1'b1;
+            end
+
+            12'h7b2:  // dret
+            begin
+              dret_insn_o = 1'b1;
             end
 
             default:

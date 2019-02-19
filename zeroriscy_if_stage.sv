@@ -42,10 +42,10 @@ module zeroriscy_if_stage
       output logic            [31:0] instr_addr_o,
       input  logic                   instr_gnt_i,
       input  logic                   instr_rvalid_i,
-      input  logic            [31:0] instr_rdata_i,
+      input  zeroriscy_pkg::t_instr instr_rdata_i,
       // Output of IF Pipeline stage
       output logic              instr_valid_id_o,      // instruction in IF/ID pipeline is valid
-      output logic       [31:0] instr_rdata_id_o,      // read instruction is sampled and sent to ID stage for decoding
+      output zeroriscy_pkg::t_instr instr_rdata_id_o,      // read instruction is sampled and sent to ID stage for decoding
       output logic              is_compressed_id_o,    // compressed decoder thinks this is a compressed instruction
       output logic              illegal_c_insn_id_o,   // compressed decoder thinks this is an invalid instruction
       output logic       [31:0] pc_if_o,
@@ -54,8 +54,9 @@ module zeroriscy_if_stage
       input  logic        clear_instr_valid_i,   // clear instruction valid bit in IF/ID pipe
       input  logic        pc_set_i,              // set the program counter to a new value
       input  logic [31:0] exception_pc_reg_i,    // address used to restore PC when the interrupt/exception is served
+      input  logic [31:0] dbg_pc_reg_i,          // address used to restore PC when returning from the debug mode (RV debug)
       input  logic  [2:0] pc_mux_i,              // sel for pc multiplexer
-      input  logic  [1:0] exc_pc_mux_i,          // selects ISR address
+      input  logic  [2:0] exc_pc_mux_i,          // selects ISR address
       input  logic  [4:0] exc_vec_pc_mux_i,      // selects ISR address for vectorized interrupt lines
 
       // jump and branch target and decision
@@ -99,6 +100,7 @@ module zeroriscy_if_stage
             EXC_PC_ILLINSN: exc_pc = { boot_addr_i[31:8], EXC_OFF_ILLINSN };
             EXC_PC_ECALL:   exc_pc = { boot_addr_i[31:8], EXC_OFF_ECALL   };
             EXC_PC_IRQ:     exc_pc = { boot_addr_i[31:8], 1'b0, exc_vec_pc_mux_i[4:0], 2'b0 };
+            EXC_PC_DBG_IRQ: exc_pc = 32'h800; // TODO
             // TODO: Add case for EXC_PC_STORE and EXC_PC_LOAD as soon as they are supported
             default:;
           endcase
@@ -114,7 +116,14 @@ module zeroriscy_if_stage
             PC_JUMP:      fetch_addr_n = jump_target_ex_i;
             PC_EXCEPTION: fetch_addr_n = exc_pc;             // set PC to exception handler
             PC_ERET:      fetch_addr_n = exception_pc_reg_i; // PC is restored when returning from IRQ/exception
+            PC_DRET:      fetch_addr_n = dbg_pc_reg_i;       // PC is restored when returning from debug mode
             PC_DBG_NPC:   fetch_addr_n = dbg_jump_addr_i;    // PC is taken from debug unit
+            //TODO (RV debug): In the Debug Mode, exceptions go to DROM. Also `ebreak` outside the Debug Mode
+            //     causes exception to go to DROM exception vector (`ebreak` in the Debug Mode is undefined).
+            //     As a temporary solution andfFor simplicity a new PC_DEXCEPTION code was interoduced, but it
+            //     would be better to use orig PC_EXCEPTION and use the Debug Mode flag to alter muxing scheme
+            //     of `exc_pc`.
+            PC_DEXCEPTION:fetch_addr_n = 32'h808;
 
             default:;
           endcase
@@ -141,7 +150,7 @@ module zeroriscy_if_stage
             .instr_addr_o      ( instr_addr_o                ),
             .instr_gnt_i       ( instr_gnt_i                 ),
             .instr_rvalid_i    ( instr_rvalid_i              ),
-            .instr_rdata_i     ( instr_rdata_i               ),
+            .instr_rdata_i     ( instr_rdata_i[31:0]         ),
 
             // Prefetch Buffer Status
             .busy_o            ( prefetch_busy               )
@@ -249,7 +258,7 @@ module zeroriscy_if_stage
               if (if_valid_o)
               begin
                   instr_valid_id_o    <= 1'b1;
-                  instr_rdata_id_o    <= instr_decompressed;
+                  instr_rdata_id_o    <= {instr_rdata_i[$high(instr_rdata_i):32],instr_decompressed};
                   illegal_c_insn_id_o <= illegal_c_insn;
                   is_compressed_id_o  <= instr_compressed_int;
                   pc_id_o             <= pc_if_o;

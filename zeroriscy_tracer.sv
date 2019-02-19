@@ -23,7 +23,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 `ifndef VERILATOR
-
+`ifndef SYNTHESIS
 
 `include "zeroriscy_config.sv"
 
@@ -441,4 +441,5 @@ module zeroriscy_tracer
   end // always @ (posedge clk)
 
 endmodule
+`endif
 `endif

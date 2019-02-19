@@ -31,6 +31,7 @@ module zeroriscy_int_controller
   // irq_req for controller
   output logic        irq_req_ctrl_o,
   output logic  [4:0] irq_id_ctrl_o,
+  output logic        irq_dbg_o,
 
   // handshake signals to controller
   input  logic        ctrl_ack_i,
@@ -40,7 +41,11 @@ module zeroriscy_int_controller
   input  logic        irq_i,          // level-triggered interrupt inputs
   input  logic  [4:0] irq_id_i,       // interrupt id [0,1,....31]
 
-  input  logic        m_IE_i          // interrupt enable bit from CSR (M mode)
+  input  logic        m_IE_i,         // interrupt enable bit from CSR (M mode)
+
+  // Debug Signals (RV)
+  input  logic        dbg_irq,        // level-triggered debug interrupt request
+  input  logic        debug_mode
 );
 
   enum logic [1:0] { IDLE, IRQ_PENDING, IRQ_DONE} exc_ctrl_cs;
@@ -58,6 +63,7 @@ module zeroriscy_int_controller
 
       irq_id_q    <= '0;
       exc_ctrl_cs <= IDLE;
+      irq_dbg_o   <= 1'b0;
 
     end else begin
 
@@ -65,12 +71,16 @@ module zeroriscy_int_controller
 
         IDLE:
         begin
-          if(irq_enable_ext & irq_i) begin
+          irq_dbg_o  <= dbg_irq & ~debug_mode;
+          if(~debug_mode & (irq_enable_ext & irq_i | dbg_irq)) begin
             exc_ctrl_cs <= IRQ_PENDING;
             irq_id_q    <= irq_id_i;
           end
         end
 
+        // TODO: Case not covered: When `dbg_irq` activates when IRQ_PENDING.
+        //       Presently the case will be to wait for taking IRQ (by the ID
+        //       controller); then when ISR starts the debug irq will trap.
         IRQ_PENDING:
         begin
           unique case(1'b1)

@@ -55,7 +55,7 @@ module zeroriscy_id_stage
 
     // Interface to IF stage
     input  logic              instr_valid_i,
-    input  logic       [31:0] instr_rdata_i,      // comes from pipeline of IF stage
+    zeroriscy_pkg::t_instr    instr_rdata_i,      // comes from pipeline of IF stage
     output logic              instr_req_o,
 
     // Jumps and branches
@@ -66,7 +66,7 @@ module zeroriscy_id_stage
     output logic        clear_instr_valid_o,
     output logic        pc_set_o,
     output logic [2:0]  pc_mux_o,
-    output logic [1:0]  exc_pc_mux_o,
+    output logic [2:0]  exc_pc_mux_o,
 
     input  logic        illegal_c_insn_i,
     input  logic        is_compressed_i,
@@ -140,6 +140,14 @@ module zeroriscy_id_stage
 
     input  logic        dbg_jump_req_i,
 
+    // Debug Signals (RV)
+    input  logic        dbg_irq,
+    input  logic        debug_mode,
+    input  logic        dbg_enter_req,
+    output logic        csr_save_dpc_o,
+    output logic        csr_restore_dret_o,
+    output logic        dbg_ebrk_stb_o,
+
     // Write back signal
     input  logic [31:0] regfile_wdata_lsu_i,
     input  logic [31:0] regfile_wdata_ex_i,
@@ -160,6 +168,7 @@ module zeroriscy_id_stage
   logic        illegal_reg_rv32e;
   logic        ebrk_insn;
   logic        mret_insn_dec;
+  logic        dret_insn_dec;
   logic        ecall_insn_dec;
   logic        pipe_flush_dec;
 
@@ -205,6 +214,7 @@ module zeroriscy_id_stage
   logic       irq_req_ctrl;
   logic [4:0] irq_id_ctrl;
   logic       exc_ack, exc_kill;// handshake
+  logic       irq_dbg;
 
   // Register file interface
   logic [4:0]  regfile_addr_ra_id;
@@ -254,7 +264,10 @@ module zeroriscy_id_stage
   logic [31:0] alu_operand_a;
   logic [31:0] alu_operand_b;
 
-  assign instr = instr_rdata_i;
+  assign instr = instr_rdata_i[31:0];
+
+  // RV debug 
+  assign dbg_ebrk_stb_o = ebrk_insn & exc_cause_o;
 
   // immediate extraction and sign extension
   assign imm_i_type  = { {20 {instr[31]}}, instr[31:20] };
@@ -460,6 +473,7 @@ module zeroriscy_id_stage
     .illegal_insn_o                  ( illegal_insn_dec          ),
     .ebrk_insn_o                     ( ebrk_insn                 ),
     .mret_insn_o                     ( mret_insn_dec             ),
+    .dret_insn_o                     ( dret_insn_dec             ),
     .ecall_insn_o                    ( ecall_insn_dec            ),
     .pipe_flush_o                    ( pipe_flush_dec            ),
 
@@ -523,6 +537,7 @@ module zeroriscy_id_stage
     .illegal_insn_i                 ( illegal_insn_dec | illegal_reg_rv32e ),
     .ecall_insn_i                   ( ecall_insn_dec         ),
     .mret_insn_i                    ( mret_insn_dec          ),
+    .dret_insn_i                    ( dret_insn_dec          ),
     .pipe_flush_i                   ( pipe_flush_dec         ),
     .ebrk_insn_i                    ( ebrk_insn              ),
     .csr_status_i                   ( csr_status             ),
@@ -555,6 +570,7 @@ module zeroriscy_id_stage
     .irq_req_ctrl_i                 ( irq_req_ctrl           ),
     .irq_id_ctrl_i                  ( irq_id_ctrl            ),
     .m_IE_i                         ( m_irq_enable_i         ),
+//tbr    .irq_dbg_i                      ( irq_dbg                ),
 
     .irq_ack_o                      ( irq_ack_o              ),
     .irq_id_o                       ( irq_id_o               ),
@@ -576,6 +592,13 @@ module zeroriscy_id_stage
     .dbg_jump_req_i                 ( dbg_jump_req_i         ),
     .dbg_settings_i                 ( dbg_settings_i         ),
     .dbg_trap_o                     ( dbg_trap_o             ),
+
+    // Debug Signals (RV)
+    .dbg_irq                        ( dbg_irq                ),
+    .dbg_enter_req                  ( dbg_enter_req          ),
+    .debug_mode                     ( debug_mode             ),
+    .csr_save_dpc_o                 ( csr_save_dpc_o         ),
+    .csr_restore_dret_id_o          ( csr_restore_dret_o     ),
 
     // Forwarding signals
     .operand_a_fw_mux_sel_o         ( operand_a_fw_mux_sel   ),
@@ -609,6 +632,7 @@ module zeroriscy_id_stage
     // to controller
     .irq_req_ctrl_o       ( irq_req_ctrl       ),
     .irq_id_ctrl_o        ( irq_id_ctrl        ),
+    .irq_dbg_o            ( irq_dbg            ),
 
     .ctrl_ack_i           ( exc_ack            ),
     .ctrl_kill_i          ( exc_kill           ),
@@ -617,7 +641,11 @@ module zeroriscy_id_stage
     .irq_i                ( irq_i              ),
     .irq_id_i             ( irq_id_i           ),
 
-    .m_IE_i               ( m_irq_enable_i     )
+    .m_IE_i               ( m_irq_enable_i     ),
+
+//tbr    .dbg_irq              ( dbg_irq            ),
+    .dbg_irq              ( 1'b0               ),
+    .debug_mode           ( debug_mode         )
   );
 
   /////////////////////////////////////
